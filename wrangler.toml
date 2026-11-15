@@ -1,0 +1,28 @@
+name = "bodcar"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[kv_namespaces]]
+binding = "DATA"
+id = "4b3dac6e9e96425294eaa77e5c5868af"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bodcar-db"
+database_id = "8426606d-e4aa-4af0-8b3f-e5a4a3292b24"
+
+[triggers]
+crons = ["0 21 * * *"]
+
+[[routes]]
+pattern = "bodcar.com"
+custom_domain = true
+
+[[routes]]
+pattern = "www.bodcar.com"
+custom_domain = true
