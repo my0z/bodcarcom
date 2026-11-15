@@ -22,7 +22,3 @@ crons = ["0 21 * * *"]
 [[routes]]
 pattern = "bodcar.com"
 custom_domain = true
-
-[[routes]]
-pattern = "www.bodcar.com"
-custom_domain = true
