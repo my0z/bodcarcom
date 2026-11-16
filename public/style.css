@@ -147,3 +147,15 @@ footer .disc{color:var(--ink);max-width:720px;margin:12px auto}
 @media(max-width:760px){.ip-top{grid-template-columns:1fr}.ip-sim{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .disc-bar{background:var(--card);border-bottom:1px solid var(--line)}.disc-bar .disc{margin:10px 0;text-align:center}
+
+/* 메인 배너: 상품 사진을 전체 배경으로 쓰고 덧씌우는 그라데이션은 없다 글씨는 흰색에 검은 테두리 */
+.slide .bg{position:absolute;inset:0;background:#fff}
+.slide .bg img{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
+.slide .bg.noimg{display:none}
+.slide .tx{position:relative;z-index:2;max-width:60%}
+.slide small,.slide h2,.slide .pr{color:#fff;background:none;padding-left:0;padding-right:0;-webkit-text-stroke:5px #000;paint-order:stroke fill;text-shadow:0 0 3px #000,0 0 6px #000}
+.slide small{font-size:.9rem;font-weight:900;-webkit-text-stroke-width:4px}
+.slide h2{padding-bottom:3px}
+.slide .go{border:2px solid #000}
+@media(max-width:760px){.slide .tx{max-width:100%}.slide h2{font-size:1.25rem}.slide .pr{font-size:1.25rem}}
+@media(max-width:760px){.car .cb{top:auto;bottom:8px;transform:none}}

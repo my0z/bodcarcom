@@ -98,7 +98,7 @@
     let top3 = take(r.filter(p => p.image), 4);
     if (!top3.length) top3 = take(r, 1);
     const railP = take(r, 12);
-    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${ilink(p)}><div class="tx"><small>🏆 오늘의 랭킹 ${i + 1}위</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div><div class="im">${img(p, i === 0)}</div></a>`).join('');
+    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${ilink(p)}>${p.image || p.i ? `<div class="bg">${img(p, i === 0, 'main')}</div>` : ''}<div class="tx"><small>🏆 오늘의 랭킹 ${i + 1}위</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div></a>`).join('');
     const cats = CATS.map(c => ({ c, l: take(r.filter(p => p.category === c), 5) })).filter(x => x.l.length);
     view.innerHTML = `
       <section class="hero"><div class="car" id="car">${slides || '<div class="slide s0 on"><div class="tx"><small>🚗 BODCAR</small><h2>자동차용품 인기템을 준비하고 있어요</h2></div></div>'}<button class="cb l" aria-label="이전">‹</button><button class="cb r" aria-label="다음">›</button><div class="dots" id="dots"></div></div><div class="tiles"><a class="tile t1" href="/c/${encodeURIComponent('차박캠핑')}"><b>⛺ 차박캠핑 모아보기</b><span>떠나기 전 필수템</span></a><a class="tile t2" href="#/talk"><b>💬 수다방</b><span>후기와 꿀팁 구경하기</span></a></div></section>

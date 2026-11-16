@@ -232,7 +232,7 @@ export async function seo(req, env, url, ctx, h = {}) {
     const r = route(p);
     if (!r) return null;
     const cache = caches.default;
-    const key = new Request(url.origin + url.pathname + '?v=8');
+    const key = new Request(url.origin + url.pathname + '?v=10');
     if (req.method === 'GET') { const hit = await cache.match(key); if (hit) return hit; }
     const tpl = await env.ASSETS.fetch(new Request(new URL('/', url)));
     if (!tpl.ok) return null;
