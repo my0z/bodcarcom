@@ -1,4 +1,5 @@
 import { seo } from './seo.js';
+import { SITE } from './site.js';
 import { track, admin, clickCounts } from './analytics.js';
 import { handle as community } from './community.js';
 
@@ -6,14 +7,8 @@ const HOST = 'https://api-gateway.coupang.com';
 const BASE = '/v2/providers/affiliate_open_api/apis/openapi/v1/products';
 
 // 카테고리별 검색어와 베스트 카테고리 ID 설정
-const CATEGORIES = {
-  '세차': ['카샴푸', '세차타월'],
-  '실내용품': ['차량용 방향제', '차량용 시트커버'],
-  '블랙박스': ['블랙박스', '블랙박스 메모리카드'],
-  '엔진타이어': ['엔진오일', '타이어 공기압 게이지'],
-  '차량전자': ['차량용 핸드폰 거치대', '차량용 무선충전기'],
-  '차박캠핑': ['차박 매트', '차량용 냉온장고']
-};
+const CATEGORIES = Object.fromEntries(Object.entries(SITE.cats).map(([c, v]) => [c, v.kw]));
+const META = Object.fromEntries(Object.entries(SITE.cats).map(([c, v]) => [c, { icon: v.icon, intro: v.intro, tips: v.tips }]));
 const BEST_BEAUTY_ID = 1018;
 const PER_KEYWORD = 6;
 
@@ -45,11 +40,12 @@ async function sign(method, path, query, env) {
   return `CEA algorithm=HmacSHA256, access-key=${env.COUPANG_ACCESS_KEY}, signed-date=${d}, signature=${hex(sig)}`;
 }
 
-async function call(path, params, env) {
+async function call(path, params, env, retry) {
   const query = new URLSearchParams(params).toString();
   const res = await fetch(`${HOST}${path}?${query}`, {
     headers: { Authorization: await sign('GET', path, query, env), 'Content-Type': 'application/json;charset=UTF-8' }
   });
+  if (res.status === 429) { await new Promise(r => setTimeout(r, 8000)); return retry ? [] : call(path, params, env, true); } // 요청 한도에 걸리면 잠깐 쉬고 한 번 더
   if (!res.ok) throw new Error(`${path} ${res.status}`);
   const j = await res.json();
   if (j.rCode && j.rCode !== '0') throw new Error(`${path} rCode ${j.rCode} ${j.rMessage}`);
@@ -85,10 +81,20 @@ async function refresh(env) {
   try {
     add((await call(`${BASE}/bestcategories/${BEST_BEAUTY_ID}`, { limit: 12 }, env)), '차량용품', 'BEST');
   } catch (e) { console.error('best', e.message); errors.push('best: ' + e.message); }
+  // 분야마다 기본 검색어와 올해 신형 검색을 함께 돌린다
+  const year = new Date().getFullYear();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   for (const [cat, kws] of Object.entries(CATEGORIES)) {
-    for (const kw of kws) {
-      try { add(await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env), cat, ''); }
+    // 기본 검색 결과와 올해 신형 검색 결과를 번갈아 배치해 인기와 최신이 함께 앞에 오게 한다
+    const fresh = [], base = [];
+    for (const [kw, list] of [[`${year} 신형 ${kws[0]}`, fresh], ...kws.map(k => [k, base])]) {
+      try { list.push(...await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env)); }
       catch (e) { console.error('search', kw, e.message); errors.push('search ' + kw + ': ' + e.message); }
+      await sleep(350);
+    }
+    for (let i = 0; i < Math.max(base.length, fresh.length); i++) {
+      if (base[i]) add([base[i]], cat, '');
+      if (fresh[i]) add([fresh[i]], cat, 'NEW');
     }
   }
   if (products.length) {
@@ -110,7 +116,7 @@ async function refresh(env) {
     for (const k of keys.slice(0, Math.max(0, keys.length - 3000))) delete links[k];
     await env.DATA.put('links', JSON.stringify(links));
     linksCache = { t: 0, v: {} };
-    await env.DATA.put('products', JSON.stringify({ updatedAt: new Date().toISOString(), categories: ['전체', ...Object.keys(CATEGORIES)], products }));
+    await env.DATA.put('products', JSON.stringify({ updatedAt: new Date().toISOString(), categories: ['전체', ...Object.keys(CATEGORIES)], meta: META, products }));
   }
   const status = { at: new Date().toISOString(), count: products.length, errors: errors.slice(0, 8) };
   await env.DATA.put('status', JSON.stringify(status));

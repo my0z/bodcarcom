@@ -1,8 +1,9 @@
 (() => {
   const $ = id => document.getElementById(id);
   const view = $('view');
-  const CATS = ['세차', '실내용품', '블랙박스', '엔진타이어', '차량전자', '차박캠핑'];
-  const ICONS = { '세차': '🫧', '실내용품': '🛋️', '블랙박스': '📹', '엔진타이어': '🛞', '차량전자': '🔌', '차박캠핑': '⛺' };
+  let CATS = [];
+  const meta = c => (products.meta && products.meta[c]) || {};
+  const icon = c => meta(c).icon || '🚗';
   let clicks = {};
   const NAME = { notice: '공지', review: '후기', qna: '질문', tip: '꿀팁', free: '자유' };
   let products = { products: [], categories: ['전체'] };
@@ -39,7 +40,7 @@
 
   const ranked = () => products.products.map((p, i) => ({ ...p, rank: i + 1 })).sort((a, b) => (clicks[b.id] || 0) - (clicks[a.id] || 0) || a.rank - b.rank);
   const card = (p, i, o = {}) => `<a class="pc" ${link(p)} style="animation-delay:${Math.min(i, 10) * 30}ms">
-    <div class="pi">${img(p)}${o.rank ? `<span class="rkb ${i + (o.off || 0) < 3 ? 'top' : ''}">${i + 1 + (o.off || 0)}</span>` : ''}${p.rocket ? '<span class="rt">🚀 로켓배송</span>' : ''}</div>
+    <div class="pi">${img(p)}${o.rank ? `<span class="rkb ${i + (o.off || 0) < 3 ? 'top' : ''}">${i + 1 + (o.off || 0)}</span>` : ''}${p.rocket ? '<span class="rt">🚀 로켓배송</span>' : ''}${p.badge === 'NEW' ? '<span class="nw">NEW</span>' : ''}</div>
     <div class="cn">${esc(p.category)}</div><h3>${esc(p.name)}</h3><div class="pp">${won(p.price)}</div>${clicks[p.id] ? `<div class="hot">🔥 ${clicks[p.id]}회 클릭</div>` : ''}<div class="bt"><span>상품보기</span></div></a>`;
 
   function home() {
@@ -66,9 +67,9 @@
     const cats = CATS.map(c => ({ c, l: take(r.filter(p => p.category === c), 5) })).filter(x => x.l.length);
     view.innerHTML = `
       <section class="hero"><div class="car" id="car">${slides || '<div class="slide s0 on"><div class="tx"><small>🚗 BODCAR</small><h2>자동차용품 인기템을 준비하고 있어요</h2></div></div>'}<button class="cb l" aria-label="이전">‹</button><button class="cb r" aria-label="다음">›</button><div class="dots" id="dots"></div></div><div class="tiles"><a class="tile t1" href="/c/${encodeURIComponent('차박캠핑')}"><b>⛺ 차박캠핑 모아보기</b><span>떠나기 전 필수템</span></a><a class="tile t2" href="#/talk"><b>💬 수다방</b><span>후기와 꿀팁 구경하기</span></a></div></section>
-      <section class="icons">${[['전체', '🛍', '/all'], ...CATS.map(c => [c, ICONS[c], '/c/' + encodeURIComponent(c)]), ['수다방', '💬', '#/talk']].map(([n, e, h]) => `<a href="${h}"><i>${e}</i>${n}</a>`).join('')}</section>
+      <section class="icons">${[['전체', '🛍', '/all'], ...CATS.map(c => [c, icon(c), '/c/' + encodeURIComponent(c)]), ['수다방', '💬', '#/talk']].map(([n, e, h]) => `<a href="${h}"><i>${e}</i>${n}</a>`).join('')}</section>
       <section class="sec"><div class="sh"><h2>🔥 실시간 <em>BEST 랭킹</em></h2><a href="/all">전체보기 ›</a></div><div class="railw"><button class="rb l" aria-label="이전">‹</button><div class="rail" id="rail">${railP.map((p, i) => card(p, i, { rank: 1, off: top3.length })).join('') || '<p class="empty">상품을 준비 중이에요</p>'}</div><button class="rb r" aria-label="다음">›</button></div></section>
-      ${cats.map(x => `<section class="sec"><div class="sh"><h2>${ICONS[x.c]} ${esc(x.c)} <em>BEST</em></h2><a href="/c/${encodeURIComponent(x.c)}">더보기 ›</a></div><div class="pg">${x.l.map((p, i) => card(p, i)).join('')}</div></section>`).join('')}
+      ${cats.map(x => `<section class="sec"><div class="sh"><h2>${icon(x.c)} ${esc(x.c)} <em>BEST</em></h2><a href="/c/${encodeURIComponent(x.c)}">더보기 ›</a></div><div class="pg">${x.l.map((p, i) => card(p, i)).join('')}</div></section>`).join('')}
       <section class="band"><div class="sh"><h2>💬 수다방 <em>새 글</em></h2><a href="#/talk">더보기 ›</a></div><div class="posts" id="posts"><p class="hint">불러오는 중</p></div><a class="btn main" style="margin-top:14px" href="#/write">✏️ 글쓰기</a></section>${faqHtml()}`;
     const car = $('car'), sl = [...car.querySelectorAll('.slide')];
     let cur = 0;
@@ -91,7 +92,7 @@
     setTitle((kw ? kw + ' 검색' : (cat ? cat + ' 인기 랭킹 TOP' : '전체 상품 인기 랭킹')) + ' | ' + SN);
     let sort = 'rank', shown = 20;
     const title = kw ? `"${esc(kw)}" 검색 결과` : (cat ? esc(cat) : '전체 상품');
-    view.innerHTML = `<div class="ph"><h1>${title}</h1><span class="hint" id="cnt"></span></div><div class="tools"><button class="chip on" data-s="rank">인기순</button><button class="chip" data-s="low">낮은 가격순</button><button class="chip" data-s="high">높은 가격순</button></div><div class="pg" id="pg"></div><div id="pmore"></div>`;
+    view.innerHTML = `<div class="ph"><h1>${title}</h1><span class="hint" id="cnt"></span></div>${cat && meta(cat).intro ? `<div class="guide"><p>${esc(meta(cat).intro)}</p><ul>${(meta(cat).tips || []).map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}<div class="tools"><button class="chip on" data-s="rank">인기순</button><button class="chip" data-s="low">낮은 가격순</button><button class="chip" data-s="high">높은 가격순</button></div><div class="pg" id="pg"></div><div id="pmore"></div>`;
     function draw() {
       const k = (kw || '').toLowerCase();
       let l = ranked().filter(p => (!cat || p.category === cat) && (!k || p.name.toLowerCase().includes(k)));
@@ -212,6 +213,7 @@
     try {
       const [p, c] = await (window.__d || Promise.all([fetch('/api/products').then(r => r.json()), fetch('/api/clicks').then(r => r.json())]));
       if (p) products = p;
+      CATS = (products.categories || []).filter(c => c !== '전체');
       if (c) clicks = c;
     } catch (e) {}
     route();

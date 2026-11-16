@@ -18,7 +18,7 @@ database_name = "bodcar-db"
 database_id = "8426606d-e4aa-4af0-8b3f-e5a4a3292b24"
 
 [triggers]
-crons = ["0 21 * * *"]
+crons = ["0 */6 * * *"]
 
 [[routes]]
 pattern = "bodcar.com"

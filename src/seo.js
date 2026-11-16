@@ -83,7 +83,7 @@ function build(r, list) {
   const cfg = SITE.cats[r.c];
   return {
     title: `${r.c} 인기 랭킹 TOP | ${SITE.name}`, desc: cfg.intro, canonical: abs(catUrl(r.c)),
-    body: `<section class="ssr"><h1>${esc(r.c)} 인기 랭킹</h1><p>${esc(cfg.intro)}</p>${nav()}${li(l.slice(0, 40))}</section>`,
+    body: `<section class="ssr"><h1>${esc(r.c)} 인기 랭킹</h1><p>${esc(cfg.intro)}</p><ul>${(cfg.tips || []).map(t => `<li>${esc(t)}</li>`).join('')}</ul>${nav()}${li(l.slice(0, 40))}</section>`,
     ld: [
       crumbs([['홈', '/'], [r.c, catUrl(r.c)]]),
       ld({ '@type': 'CollectionPage', name: `${r.c} 인기 랭킹`, url: abs(catUrl(r.c)), description: cfg.intro, inLanguage: 'ko-KR' }),
