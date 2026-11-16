@@ -1,6 +1,6 @@
 import { seo } from './seo.js';
 import { SITE } from './site.js';
-import { track, admin, clickCounts } from './analytics.js';
+import { track, admin, clickCounts, countRequest, overBudget, pruneOld, recordPrices, getHist } from './analytics.js';
 import { handle as community } from './community.js';
 
 const HOST = 'https://api-gateway.coupang.com';
@@ -9,6 +9,13 @@ const BASE = '/v2/providers/affiliate_open_api/apis/openapi/v1/products';
 // 카테고리별 검색어와 베스트 카테고리 ID 설정
 const CATEGORIES = Object.fromEntries(Object.entries(SITE.cats).map(([c, v]) => [c, v.kw]));
 const META = Object.fromEntries(Object.entries(SITE.cats).map(([c, v]) => [c, { icon: v.icon, intro: v.intro, tips: v.tips }]));
+// 분야마다 올해 신형 검색(NEW)과 기본 검색어를 하나의 목록으로 만든다
+const YEAR = new Date().getFullYear();
+const KW_ALL = Object.entries(CATEGORIES).flatMap(([c, ks]) => [[c, `${YEAR} 신형 ${ks[0]}`, 'NEW'], ...ks.map(k => [c, k, ''])]);
+const PER_RUN = 6; // 한 번에 가장 오래된 검색어 6개만 갱신한다 (쿠팡 검색 API는 시간당 10회 제한)
+// 쿠팡 파트너스 운영정책상 홍보하면 안 되는 상품(이미테이션과 성인용품)을 걸러낸다
+const BLOCK = /이미테이션|짝퉁|레플리카|replica|모조품|카피|정품급|[SA]급|19금|콘돔|딜도|바이브|자위|애널|러브젤/i;
+const skipName = nm => BLOCK.test(nm);
 const BEST_BEAUTY_ID = 1018;
 const PER_KEYWORD = 6;
 
@@ -58,11 +65,22 @@ const norm = (p, category, badge = '') => ({
   category,
   name: p.productName,
   price: p.productPrice,
-  image: p.productImage,
+  image: String(p.productImage || '').replace(/^http:/, 'https:'),
   url: p.productUrl,
-  rocket: !!p.isRocket,
   badge
 });
+
+// 쿠팡 파트너스 검색 API는 시간당 10회까지라서 안전하게 8회까지만 쓴다 (초과하면 API가 막힐 수 있다)
+async function allowSearch(env) {
+  const hour = Math.floor(Date.now() / 3600e3);
+  let o = null;
+  try { o = JSON.parse((await env.DATA.get('apiq')) || 'null'); } catch (e) {}
+  if (!o || o.h !== hour) o = { h: hour, n: 0 };
+  if (o.n >= 8) return false;
+  o.n++;
+  await env.DATA.put('apiq', JSON.stringify(o), { expirationTtl: 3700 });
+  return true;
+}
 
 async function refresh(env) {
   const errors = [];
@@ -72,31 +90,57 @@ async function refresh(env) {
   const add = (list, cat, badge) => {
     for (const p of list) {
       const nm = String(p.productName || '').toLowerCase().replace(/\s+/g, '');
-      if (!p.productId || seen.has(p.productId) || names.has(nm)) continue;
+      if (!p.productId || seen.has(p.productId) || names.has(nm) || skipName(String(p.productName || ''))) continue;
       seen.add(p.productId);
       names.add(nm);
       products.push(norm(p, cat, badge));
     }
   };
+  const slim = p => ({ productId: p.productId, productName: p.productName, productPrice: p.productPrice, productImage: p.productImage, productUrl: p.productUrl });
+
+  // 검색 결과는 검색어별로 KV에 보관하고 이번에는 가장 오래된 검색어부터 일부만 새로 불러온다
+  let pool = {};
+  try { pool = JSON.parse((await env.DATA.get('pool')) || '{}'); } catch (e) {}
+  let prev = null;
+  try { prev = JSON.parse((await env.DATA.get('products')) || 'null'); } catch (e) {}
+  const have = new Set(((prev && prev.products) || []).map(p => p.category)); // 상품이 아직 없는 분야를 먼저 채운다
   try {
-    add((await call(`${BASE}/bestcategories/${BEST_BEAUTY_ID}`, { limit: 12 }, env)), '차량용품', 'BEST');
+    pool.__best = { t: Date.now(), items: (await call(`${BASE}/bestcategories/${BEST_BEAUTY_ID}`, { limit: 12 }, env)).map(slim) };
   } catch (e) { console.error('best', e.message); errors.push('best: ' + e.message); }
-  // 분야마다 기본 검색어와 올해 신형 검색을 함께 돌린다
-  const year = new Date().getFullYear();
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  for (const [cat, kws] of Object.entries(CATEGORIES)) {
-    // 기본 검색 결과와 올해 신형 검색 결과를 번갈아 배치해 인기와 최신이 함께 앞에 오게 한다
-    const fresh = [], base = [];
-    for (const [kw, list] of [[`${year} 신형 ${kws[0]}`, fresh], ...kws.map(k => [k, base])]) {
-      try { list.push(...await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env)); }
-      catch (e) { console.error('search', kw, e.message); errors.push('search ' + kw + ': ' + e.message); }
-      await sleep(350);
-    }
+  const order = KW_ALL.slice().sort((a, b) => (((pool[a[1]] && pool[a[1]].t) || 0) - ((pool[b[1]] && pool[b[1]].t) || 0)) || ((have.has(a[0]) ? 1 : 0) - (have.has(b[0]) ? 1 : 0)));
+  let done = 0;
+  for (const [cat, kw] of order) {
+    if (done >= PER_RUN) break;
+    try {
+      if (!(await allowSearch(env))) { errors.push('search ' + kw + ': 시간당 호출 한도 보호로 건너뜀'); break; }
+      pool[kw] = { t: Date.now(), cat, items: (await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env)).map(slim) };
+      done++;
+    } catch (e) { console.error('search', kw, e.message); errors.push('search ' + kw + ': ' + e.message); }
+  }
+  for (const k of Object.keys(pool)) if (k !== '__best' && !KW_ALL.some(x => x[1] === k)) delete pool[k];
+  await env.DATA.put('pool', JSON.stringify(pool));
+
+  if (pool.__best) add(pool.__best.items, '차량용품', 'BEST');
+  // 분야마다 기본 검색 결과와 올해 신형 검색 결과를 번갈아 배치해 인기와 최신이 함께 앞에 오게 한다
+  for (const cat of Object.keys(CATEGORIES)) {
+    const base = [], fresh = [];
+    for (const [c, kw, badge] of KW_ALL) if (c === cat && pool[kw]) (badge ? fresh : base).push(...pool[kw].items);
     for (let i = 0; i < Math.max(base.length, fresh.length); i++) {
       if (base[i]) add([base[i]], cat, '');
       if (fresh[i]) add([fresh[i]], cat, 'NEW');
     }
   }
+
+  // 아직 한 번도 불러오지 못한 분야는 이전 상품을 그대로 유지한다 (목록이 갑자기 줄지 않게)
+  const fresh = new Set(products.map(p => p.category));
+  const kept = [];
+  if (prev && prev.products) {
+    for (const p of prev.products) {
+      if (fresh.has(p.category) || seen.has(p.id) || names.has(String(p.name || '').toLowerCase().replace(/\s+/g, ''))) continue;
+      kept.push({ ...p, keep: true });
+    }
+  }
+
   if (products.length) {
     // 쿠팡 링크를 4자리 짧은 링크로 바꾸고 원본은 따로 보관
     const links = JSON.parse((await env.DATA.get('links')) || '{}');
@@ -116,12 +160,15 @@ async function refresh(env) {
     for (const k of keys.slice(0, Math.max(0, keys.length - 3000))) delete links[k];
     await env.DATA.put('links', JSON.stringify(links));
     linksCache = { t: 0, v: {} };
-    await env.DATA.put('products', JSON.stringify({ updatedAt: new Date().toISOString(), categories: ['전체', ...Object.keys(CATEGORIES)], meta: META, products }));
+    const all = [...products, ...kept.map(({ keep, ...x }) => x)];
+    try { await recordPrices(env, all.map(x => ({ ...x }))); } catch (e) { console.error('price', e.message); }
+    await env.DATA.put('products', JSON.stringify({ updatedAt: new Date().toISOString(), categories: ['전체', ...Object.keys(CATEGORIES)], meta: META, products: all }));
   }
-  const status = { at: new Date().toISOString(), count: products.length, errors: errors.slice(0, 8) };
+  const status = { at: new Date().toISOString(), count: products.length + kept.length, fresh: products.length, searched: done, errors: errors.slice(0, 8) };
   await env.DATA.put('status', JSON.stringify(status));
   return status;
 }
+
 
 // 상품 번호로 썸네일을 대신 가져와 원본 주소를 숨기는 프록시 (엣지 캐시)
 let prodCache = { t: 0, v: null };
@@ -130,37 +177,6 @@ async function getProducts(env) {
   const v = JSON.parse((await env.DATA.get('products', { cacheTtl: 60 })) || 'null');
   prodCache = { t: Date.now(), v };
   return v;
-}
-
-async function image(req, url, ctx, env) {
-  const id = url.pathname.slice(3);
-  const webp = /image\/webp/.test(req.headers.get('accept') || '');
-  // 캐시를 먼저 확인해서 적중하면 KV도 읽지 않는다
-  const key = new Request(url.origin + url.pathname + (webp ? '?f=w' : '?f=j'));
-  const hit = await caches.default.match(key);
-  if (hit) return hit;
-  const data = await getProducts(env);
-  const p = data && data.products.find(x => x.id === id);
-  if (!p || !p.image) return new Response('not found', { status: 404 });
-  let t;
-  try { t = new URL(p.image); } catch (e) { return new Response('bad', { status: 400 }); }
-  if (!/^https?:$/.test(t.protocol) || !/(^|\.)(coupangcdn|coupang)\.com$/.test(t.hostname)) return new Response('forbidden', { status: 403 });
-  let up;
-  try { up = await fetch('https://' + t.host + t.pathname + t.search, { headers: { 'user-agent': 'Mozilla/5.0' }, cf: { cacheTtl: 86400, cacheEverything: true } }); } catch (e) { return new Response('upstream error', { status: 502 }); }
-  if (!up.ok) return new Response('upstream ' + up.status, { status: 502 });
-  const buf = await up.arrayBuffer();
-  let body = buf, type = up.headers.get('content-type') || 'image/jpeg';
-  // 카드에 보이는 크기에 맞춰 줄이고 WebP로 바꿔 용량을 크게 줄인다 (실패하면 원본 그대로)
-  if (env.IMAGES) {
-    try {
-      const out = await env.IMAGES.input(new Response(buf).body).transform({ width: 480, fit: 'scale-down' }).output({ format: webp ? 'image/webp' : 'image/jpeg', quality: 78 });
-      const small = await out.response().arrayBuffer();
-      if (small.byteLength && small.byteLength < buf.byteLength) { body = small; type = webp ? 'image/webp' : 'image/jpeg'; }
-    } catch (e) { console.error('img', e.message); }
-  }
-  const res = new Response(body, { headers: { 'content-type': type, 'cache-control': 'public,max-age=2592000', 'vary': 'Accept' } });
-  ctx.waitUntil(caches.default.put(key, res.clone()));
-  return res;
 }
 
 // 응답을 엣지에 잠깐 캐시해서 KV와 D1을 매번 읽지 않게 한다
@@ -193,8 +209,8 @@ export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const path = url.pathname;
+    countRequest(env, ctx);
     if (path === '/0') return admin(req, env, url);
-    if (/^\/i\/\d+$/.test(path)) return image(req, url, ctx, env);
     if (path === '/api/clicks') return new Response(JSON.stringify(await getClicks(env, ctx)), { headers: { 'content-type': 'application/json', 'cache-control': 'public,max-age=60,stale-while-revalidate=300' } });
     if (/^\/api\/(posts|comments)(\/|$)/.test(path)) {
       if (!env.DB) return new Response('{"error":"db"}', { status: 500 });
@@ -219,7 +235,7 @@ export default {
       }
     }
     if (path === '/' || path === '/index.html') ctx.waitUntil(track(env, req, { type: 'view' }));
-    { const sr = await seo(req, env, url, ctx, { products: getProducts, clicks: () => getClicks(env, ctx) }); if (sr) return sr; }
+    { const sr = await seo(req, env, url, ctx, { products: getProducts, clicks: () => getClicks(env, ctx), hist: id => getHist(env, id) }); if (sr) return sr; }
     if (url.pathname === '/api/debug') {
       const info = { version: env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id, versionAt: env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.timestamp, envKeys: Object.keys(env), hasKeys: !!(env.COUPANG_ACCESS_KEY && env.COUPANG_SECRET_KEY), keyLen: [(env.COUPANG_ACCESS_KEY || '').length, (env.COUPANG_SECRET_KEY || '').length] };
       if (url.searchParams.get('run') === '1' && info.hasKeys && !(await env.DATA.get('lock'))) {
@@ -230,12 +246,19 @@ export default {
       info.hasProducts = !!(await env.DATA.get('products'));
       return new Response(JSON.stringify(info, null, 1), { headers: { 'content-type': 'application/json' } });
     }
+    if (path === '/api/img') { // 화면에 필요한 상품의 쿠팡 이미지 주소만 골라 준다 (한 번에 40개까지)
+      const ids = new Set((url.searchParams.get('ids') || '').split(',').filter(x => /^\d{1,20}$/.test(x)).slice(0, 40));
+      const d = await getProducts(env);
+      const m = {};
+      if (d) for (const p of d.products) if (ids.has(p.id) && p.image) m[p.id] = p.image;
+      return new Response(JSON.stringify(m), { headers: { 'content-type': 'application/json', 'cache-control': 'public,max-age=3600' } });
+    }
     if (url.pathname === '/api/products') {
       const hit = await caches.default.match(new Request(url.origin + url.pathname));
       if (hit) return hit;
       const d = await getProducts(env);
       if (d) {
-        const body = JSON.stringify({ ...d, products: d.products.map(p => ({ ...p, image: !!p.image })) }); // 원본 이미지 주소는 숨김
+        const body = JSON.stringify({ ...d, products: d.products.map(({ rocket, image, ...x }) => ({ ...x, i: image ? 1 : 0 })) }); // 긴 이미지 주소는 빼고 필요한 것만 /api/img 로 준다
         return edgeJson(url, ctx, 300, async () => body);
       }
       // 저장된 상품이 없으면 백그라운드에서 즉시 갱신 (5분 잠금)
@@ -248,6 +271,7 @@ export default {
     return env.ASSETS.fetch(req);
   },
   async scheduled(_evt, env, ctx) {
+    ctx.waitUntil(pruneOld(env));
     ctx.waitUntil(refresh(env));
   }
 };

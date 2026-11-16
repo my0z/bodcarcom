@@ -9,14 +9,48 @@
   let products = { products: [], categories: ['전체'] };
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const won = n => n ? Number(n).toLocaleString('ko-KR') + '원' : '가격 확인';
-  const img = (p, eager) => p.image ? (eager ? `<img src="/i/${esc(p.id)}" fetchpriority="high" decoding="async" alt="" onerror="this.replaceWith('🚗')">` : `<img data-src="/i/${esc(p.id)}" decoding="async" alt="" onerror="this.replaceWith('🚗')">`) : '🚗';
+  // 이미지 주소는 서버가 화면에 먼저 보일 것만 HTML에 담아 주고 나머지는 스크롤할 때 /api/img 로 받아 온다
+  const IMG = window.__img || {};
+  const img = (p, eager, cls) => {
+    if (!p.i && !p.image) return cls ? '' : '🚗';
+    const u = esc(String(IMG[p.id] || p.image || '').replace(/^http:/, 'https:'));
+    const c = cls ? ` class="${cls}"` : '';
+    const a = `data-id="${esc(p.id)}" data-u="${u}" data-b="${cls ? 1 : ''}" decoding="async" referrerpolicy="no-referrer" alt="" onerror="__ie(this)"`;
+    return eager && u ? `<img${c} src="${u}" fetchpriority="high" ${a}>` : `<img${c} data-src="${u}" ${a}>`;
+  };
+  const need = new Set(); let needT = 0;
+  const resolve = el => {
+    if (el.dataset.q) return; // 이미 요청 중이면 다시 요청하지 않는다
+    el.dataset.q = '1';
+    need.add(el.dataset.id);
+    if (needT) return;
+    needT = setTimeout(() => {
+      needT = 0;
+      // 화면에 있는 주소 없는 이미지를 한꺼번에 받아 와서 요청 수를 줄인다 (한 번에 40개까지 같은 이미지는 다시 요청하지 않는다)
+      document.querySelectorAll('img[data-id]:not([src]):not([data-q])').forEach(e => { if (!e.dataset.u && need.size < 40) { e.dataset.q = '1'; need.add(e.dataset.id); } });
+      const ids = [...need]; need.clear();
+      if (!ids.length) return;
+      const els = id => document.querySelectorAll('img[data-id="' + id + '"]');
+      fetch('/api/img?ids=' + ids.join(',')).then(r => r.json()).then(m => {
+        Object.assign(IMG, m);
+        ids.forEach(id => els(id).forEach(e => { if (e.getAttribute('src')) return; if (m[id]) { e.dataset.u = m[id]; e.src = m[id]; } else window.__ie(e); }));
+      }).catch(() => ids.forEach(id => els(id).forEach(e => delete e.dataset.q)));
+    }, 150);
+  };
+  // 이미지 로딩에 실패하면 두 번까지 다시 시도하고 그래도 안 되면 대체 표시
+  window.__ie = el => {
+    const n = +el.dataset.t || 0;
+    if (n < 2) { el.dataset.t = n + 1; setTimeout(() => { el.removeAttribute('src'); if (el.dataset.u) el.src = el.dataset.u; else { delete el.dataset.q; resolve(el); } }, 1000 * (n + 1)); }
+    else if (el.dataset.b) el.parentNode.classList.add('noimg');
+    else el.replaceWith('🚗');
+  };
   const io = 'IntersectionObserver' in window ? new IntersectionObserver(es => es.forEach(e => {
     if (!e.isIntersecting) return;
     const el = e.target;
     io.unobserve(el);
-    el.src = el.dataset.src;
+    if (el.dataset.src) el.src = el.dataset.src; else resolve(el);
   }), { rootMargin: '600px 0px' }) : null;
-  const watch = root => root.querySelectorAll && root.querySelectorAll('img[data-src]').forEach(el => { if (io) io.observe(el); else el.src = el.dataset.src; });
+  const watch = root => root.querySelectorAll && root.querySelectorAll('img[data-src]').forEach(el => { if (io) io.observe(el); else if (el.dataset.src) el.src = el.dataset.src; else resolve(el); });
   new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) watch(n); }))).observe(document.body, { childList: true, subtree: true });
   const api = async (u, opt) => { const r = await fetch(u, opt); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || '오류가 발생했어요'); return j; };
   const post = (u, b) => api(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
@@ -29,6 +63,7 @@
   const setTitle = t => { document.title = t; };
   let timer;
   const narrow = on => view.classList.toggle('narrow', on);
+  const ilink = p => `href="/item/${esc(p.id)}"`;
   const link = (p, extra) => `href="${esc(p.url)}" target="_blank" rel="sponsored noopener nofollow"${extra || ''}`;
 
   function nav(cur) {
@@ -39,8 +74,8 @@
   }
 
   const ranked = () => products.products.map((p, i) => ({ ...p, rank: i + 1 })).sort((a, b) => (clicks[b.id] || 0) - (clicks[a.id] || 0) || a.rank - b.rank);
-  const card = (p, i, o = {}) => `<a class="pc" ${link(p)} style="animation-delay:${Math.min(i, 10) * 30}ms">
-    <div class="pi">${img(p)}${o.rank ? `<span class="rkb ${i + (o.off || 0) < 3 ? 'top' : ''}">${i + 1 + (o.off || 0)}</span>` : ''}${p.rocket ? '<span class="rt">🚀 로켓배송</span>' : ''}${p.badge === 'NEW' ? '<span class="nw">NEW</span>' : ''}</div>
+  const card = (p, i, o = {}) => `<a class="pc" ${ilink(p)} style="animation-delay:${Math.min(i, 10) * 30}ms">
+    <div class="pi">${img(p)}${o.rank ? `<span class="rkb ${i + (o.off || 0) < 3 ? 'top' : ''}">${i + 1 + (o.off || 0)}</span>` : ''}${p.badge === 'NEW' ? '<span class="nw">NEW</span>' : ''}</div>
     <div class="cn">${esc(p.category)}</div><h3>${esc(p.name)}</h3><div class="pp">${won(p.price)}</div>${clicks[p.id] ? `<div class="hot">🔥 ${clicks[p.id]}회 클릭</div>` : ''}<div class="bt"><span>상품보기</span></div></a>`;
 
   function home() {
@@ -63,7 +98,7 @@
     let top3 = take(r.filter(p => p.image), 4);
     if (!top3.length) top3 = take(r, 1);
     const railP = take(r, 12);
-    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${link(p)}><div class="tx"><small>🏆 오늘의 랭킹 ${i + 1}위</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div><div class="im">${img(p, i === 0)}</div></a>`).join('');
+    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${ilink(p)}><div class="tx"><small>🏆 오늘의 랭킹 ${i + 1}위</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div><div class="im">${img(p, i === 0)}</div></a>`).join('');
     const cats = CATS.map(c => ({ c, l: take(r.filter(p => p.category === c), 5) })).filter(x => x.l.length);
     view.innerHTML = `
       <section class="hero"><div class="car" id="car">${slides || '<div class="slide s0 on"><div class="tx"><small>🚗 BODCAR</small><h2>자동차용품 인기템을 준비하고 있어요</h2></div></div>'}<button class="cb l" aria-label="이전">‹</button><button class="cb r" aria-label="다음">›</button><div class="dots" id="dots"></div></div><div class="tiles"><a class="tile t1" href="/c/${encodeURIComponent('차박캠핑')}"><b>⛺ 차박캠핑 모아보기</b><span>떠나기 전 필수템</span></a><a class="tile t2" href="#/talk"><b>💬 수다방</b><span>후기와 꿀팁 구경하기</span></a></div></section>
@@ -83,7 +118,8 @@
     const rail = $('rail');
     view.querySelector('.rb.l').onclick = () => rail.scrollBy({ left: -rail.clientWidth * .8, behavior: 'smooth' });
     view.querySelector('.rb.r').onclick = () => rail.scrollBy({ left: rail.clientWidth * .8, behavior: 'smooth' });
-    api('/api/posts?sort=new').then(d => { $('posts').innerHTML = d.posts.slice(0, 3).map(p => `<a class="pt" href="#/p/${p.id}"><span class="bd ${p.board}">${NAME[p.board] || ''}</span><h4>${esc(p.title)}</h4><p>${esc(p.ex)}</p></a>`).join('') || '<p class="hint">아직 글이 없어요</p>'; }).catch(() => {});
+    const loadPosts = () => api('/api/posts?sort=new').then(d => { $('posts').innerHTML = d.posts.slice(0, 3).map(p => `<a class="pt" href="#/p/${p.id}"><span class="bd ${p.board}">${NAME[p.board] || ''}</span><h4>${esc(p.title)}</h4><p>${esc(p.ex)}</p></a>`).join('') || '<p class="hint">아직 글이 없어요</p>'; }).catch(() => {});
+    if (io) { const po = new IntersectionObserver(es => { if (es[0].isIntersecting) { po.disconnect(); loadPosts(); } }, { rootMargin: '300px' }); po.observe($('posts')); } else loadPosts();
   }
 
   function catalog(cat, kw) {
@@ -107,7 +143,7 @@
     draw();
   }
 
-  const adCard = p => `<a class="ad" href="${esc(p.url)}" target="_blank" rel="sponsored noopener nofollow"><div class="th">${img(p)}</div><div class="tx"><small>추천 상품</small><h4>${esc(p.name)}</h4><b>${won(p.price)}</b></div><span class="go">상품보기</span></a>`;
+  const adCard = p => `<a class="ad" href="/item/${esc(p.id)}"><div class="th">${img(p)}</div><div class="tx"><small>추천 상품</small><h4>${esc(p.name)}</h4><b>${won(p.price)}</b></div><span class="go">상품보기</span></a>`;
   const item = (p, i) => `<a class="item ${p.pinned ? 'pin' : ''}" href="#/p/${p.id}" style="animation-delay:${Math.min(i, 10) * 35}ms">
     <span class="bd ${p.board}">${NAME[p.board] || ''}</span>${p.pinned ? '📌' : ''}<h2>${esc(p.title)}</h2><p class="ex">${esc(p.ex)}</p>
     <div class="meta"><b>${esc(p.nick)}</b><span>${ago(p.ts)}</span><span>👁 ${p.views}</span><span>❤ ${p.likes}</span><span>💬 ${p.ccount}</span></div></a>`;
@@ -179,6 +215,12 @@
   function route() {
     clearInterval(timer);
     let h = location.hash.replace(/^#/, '');
+    if (!h && /^\/item\/\d+$/.test(location.pathname)) {
+      narrow(false);
+      const el = document.querySelector('[data-cat]');
+      nav(el ? el.dataset.cat : '');
+      return;
+    }
     if (!h) { const pp = decodeURIComponent(location.pathname); h = /^\/(c\/.+|all)$/.test(pp) ? pp : '/'; }
     let m;
     scrollTo(0, 0);

@@ -1,5 +1,5 @@
 // SEO와 AEO 공용 모듈: 메타태그 JSON-LD 서버 렌더링 sitemap robots llms.txt
-import { SITE } from './site.js';
+import { SITE, DISC, GUIDE } from './site.js';
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const ld = o => `<script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', ...o }).replace(/</g, '\\u003c')}</script>`;
@@ -18,13 +18,13 @@ async function load(env) {
 
 function product(p) {
   const o = { '@type': 'Product', name: p.name, url: abs(p.url), category: p.category };
-  if (p.image) o.image = abs('/i/' + p.id);
-  if (p.price) o.offers = { '@type': 'Offer', priceCurrency: 'KRW', price: p.price, availability: 'https://schema.org/InStock', url: abs(p.url) };
+  if (p.image) o.image = p.image;
+  if (p.price) o.offers = { '@type': 'Offer', priceCurrency: 'KRW', price: p.price, url: abs(p.url) };
   return o;
 }
 const itemList = (list, name) => ({
   '@type': 'ItemList', name,
-  itemListElement: list.map((p, i) => ({ '@type': 'ListItem', position: i + 1, item: product(p) }))
+  itemListElement: list.map((p, i) => ({ '@type': 'ListItem', position: i + 1, item: product(i < 10 ? p : { ...p, image: '' }) })) // 이미지 주소가 길어서 앞 10개만 싣는다
 });
 const crumbs = items => ld({
   '@type': 'BreadcrumbList',
@@ -41,6 +41,8 @@ const nav = () => `<nav><a href="/">홈</a> <a href="/all">전체 상품</a> ${O
 function route(p) {
   if (p === '/' || p === '/index.html') return { t: 'home' };
   if (p === '/all') return { t: 'all' };
+  const im = p.match(/^\/item\/(\d{1,20})$/);
+  if (im) return { t: 'item', id: im[1] };
   const m = p.match(/^\/c\/(.+)$/);
   if (m) {
     let c = '';
@@ -50,7 +52,82 @@ function route(p) {
   return null;
 }
 
+
+const fmt = n => Number(n).toLocaleString('ko-KR');
+const mdate = ts => { const d = new Date(ts + 9 * 3600e3); return `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일`; };
+
+// 상품명에 용량이 하나만 적혀 있을 때만 단위 가격을 추정한다 (묶음 상품은 계산하지 않는다)
+function unitPrice(name, price) {
+  if (!price) return '';
+  const rest = name.replace(/\d+(?:\.\d+)?\s?(?:ml|g|kg|l)\b/gi, ' ');
+  if (/\d+\s?(?:개입|개|입|팩|세트|set|매|병|통|ea)|[x×*+]\s?\d/i.test(rest)) return '';
+  const m = [...name.matchAll(/(\d+(?:\.\d+)?)\s?(ml|g|kg|l)\b/gi)];
+  if (m.length !== 1) return '';
+  let v = parseFloat(m[0][1]);
+  const u = m[0][2].toLowerCase();
+  if (u === 'kg' || u === 'l') v *= 1000;
+  if (!v || v < 5) return '';
+  return `${Math.round(price / v * 100)}원 (${u === 'ml' || u === 'l' ? '100ml' : '100g'}당)`;
+}
+
+function spark(h) {
+  if (h.length < 2) return '';
+  const W = 640, H = 140, P = 12;
+  const ps = h.map(x => x.price), mn = Math.min(...ps), mx = Math.max(...ps), rg = mx - mn || 1;
+  const x = i => P + i * (W - 2 * P) / (h.length - 1);
+  const y = v => H - P - (v - mn) * (H - 2 * P) / rg;
+  const pts = h.map((r, i) => `${x(i).toFixed(1)},${y(r.price).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" class="spark" role="img" aria-label="가격 변화 그래프"><polyline fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" points="${pts}"/>${h.map((r, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(r.price).toFixed(1)}" r="4" fill="currentColor"/>`).join('')}</svg>`;
+}
+
+function buildItem(p, list, hist) {
+  const cat = p.category;
+  const same = list.filter(x => x.category === cat);
+  const byPrice = same.filter(x => x.price).sort((a, b) => a.price - b.price);
+  const idx = byPrice.findIndex(x => x.id === p.id);
+  const start = Math.max(0, Math.min(Math.max(0, byPrice.length - 8), idx - 3));
+  const near = byPrice.slice(start, start + 8);
+  const similar = same.filter(x => x.id !== p.id).slice(0, 4);
+  const unit = unitPrice(p.name, p.price);
+  const prices = hist.map(r => r.price);
+  let trend = '';
+  if (hist.length >= 2) trend = `<p>${mdate(hist[0].ts)}부터 기록한 가격 중 가장 낮은 값은 ${fmt(Math.min(...prices))}원 가장 높은 값은 ${fmt(Math.max(...prices))}원이고 마지막으로 바뀐 날은 ${mdate(hist[hist.length - 1].ts)}입니다.</p>`;
+  else if (hist.length === 1) trend = `<p>${mdate(hist[0].ts)}부터 이 상품의 가격을 기록하고 있으며 지금까지 가격이 바뀐 적은 없습니다.</p>`;
+  else trend = '<p>이 상품의 가격 기록을 쌓는 중입니다. 하루에 여러 번 확인해 가격이 바뀌면 이곳에 표시합니다.</p>';
+  const facts = [
+    ['카테고리', cat],
+    ['쿠팡 판매가', p.price ? `${fmt(p.price)}원` : '쿠팡에서 확인'],
+    unit ? ['단위 가격', unit + ' 상품명의 용량 기준 추정'] : null,
+    idx >= 0 ? ['같은 카테고리 가격 순위', `${byPrice.length}개 중 ${idx + 1}번째로 저렴 (이 사이트에 담긴 상품 기준)`] : null
+  ].filter(Boolean);
+  const title = `${p.name} 가격 정보 | ${SITE.name}`;
+  const desc = `${p.name} ${cat} 상품의 쿠팡 판매가${p.price ? ' ' + p.price + '원' : ''}과 가격 변화와 같은 카테고리 가격 비교와 고르는 법을 정리했습니다`.slice(0, 150);
+  const tip = (GUIDE[cat] || []).map(t => `<li>${esc(t)}</li>`).join('');
+  const body = `<article class="ip ssr" data-cat="${esc(cat)}">
+<nav class="crumb"><a href="/">홈</a> › <a href="${catUrl(cat)}">${esc(cat)}</a> › <span>상품 정보</span></nav>
+<div class="ip-top"><div class="ip-img">${p.image ? `<img src="${esc(p.image)}" alt="${esc(p.name)}" fetchpriority="high" decoding="async" referrerpolicy="no-referrer">` : '<span>🚗</span>'}</div>
+<div class="ip-info"><span class="bd">${esc(cat)}</span><h1>${esc(p.name)}</h1>
+<div class="ip-price">${p.price ? `${fmt(p.price)}<small>원</small>` : '가격 확인'}</div>
+<p class="ip-note">쿠팡 파트너스 데이터 기준이며 실제 가격과 재고는 쿠팡에서 바뀔 수 있습니다.</p>
+<a class="ip-cta" href="${esc(p.url)}" target="_blank" rel="sponsored nofollow noopener">쿠팡에서 최신 가격 확인하기</a>
+<p class="disc">${esc(DISC)}</p></div></div>
+<section><h2>상품 한눈에 보기</h2><table class="ip-table"><tbody>${facts.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')}</tbody></table></section>
+<section><h2>가격 변화</h2>${spark(hist)}${trend}<p class="ip-note">하루에 여러 번 쿠팡 파트너스 데이터를 불러올 때 가격이 바뀐 경우만 기록한 값입니다.</p></section>
+<section><h2>${esc(cat)} 가격 비교</h2><table class="ip-table cmp"><thead><tr><th>상품</th><th>쿠팡 판매가</th></tr></thead><tbody>${near.map(x => `<tr class="${x.id === p.id ? 'me' : ''}"><td><a href="/item/${esc(x.id)}">${esc(x.name)}</a></td><td>${fmt(x.price)}원</td></tr>`).join('')}</tbody></table></section>
+${tip ? `<section><h2>${esc(cat)} 고를 때 확인할 점</h2><ul class="ip-tips">${tip}</ul></section>` : ''}
+${similar.length ? `<section><h2>같은 카테고리의 다른 상품</h2><div class="ip-sim">${similar.map(x => `<a href="/item/${esc(x.id)}">${x.image ? `<img src="${esc(x.image)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : '<span>🚗</span>'}<b>${esc(x.name)}</b><em>${x.price ? fmt(x.price) + '원' : ''}</em></a>`).join('')}</div></section>` : ''}
+</article>`;
+  return {
+    title, desc, canonical: abs('/item/' + p.id), body,
+    ld: [
+      crumbs([['홈', '/'], [cat, catUrl(cat)], [p.name, '/item/' + p.id]]),
+      ld({ ...product(p), '@id': abs('/item/' + p.id), url: abs('/item/' + p.id), description: desc, offers: p.price ? { '@type': 'Offer', priceCurrency: 'KRW', price: p.price, url: abs(p.url) } : undefined })
+    ]
+  };
+}
+
 function build(r, list) {
+  if (r.t === 'item') return buildItem(r.p, list, r.hist || []);
   const top = list.slice(0, 20);
   if (r.t === 'home') {
     let body = `<section class="ssr"><h1>${esc(SITE.h1)}</h1><p>${esc(SITE.intro)}</p>${nav()}`;
@@ -96,7 +173,7 @@ function inject(html, pg, img, boot) {
   const tags = [
     '<meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1">',
     `<link rel="canonical" href="${pg.canonical}">`,
-    pg.preload ? `<link rel="preload" as="image" href="${pg.preload}" fetchpriority="high">` : '',
+    pg.preload ? `<link rel="preload" as="image" href="${pg.preload}" fetchpriority="high" referrerpolicy="no-referrer">` : '',
     `<meta property="og:type" content="website"><meta property="og:locale" content="ko_KR">`,
     `<meta property="og:site_name" content="${esc(SITE.name)}">`,
     `<meta property="og:title" content="${esc(pg.title)}"><meta property="og:description" content="${esc(pg.desc)}">`,
@@ -112,7 +189,7 @@ function inject(html, pg, img, boot) {
   return html
     .replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(pg.title)}</title>`)
     .replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${esc(pg.desc)}">`)
-    .replace('<link rel="stylesheet" href="/style.css">', m => m + (boot ? `\n<script>window.__p=${JSON.stringify(boot).replace(/</g, '\\u003c')}</script>` : ''))
+    .replace('<link rel="stylesheet" href="/style.css">', m => m + (boot ? `\n<script>window.__p=${JSON.stringify([boot[0], boot[1]]).replace(/</g, '\\u003c')};window.__img=${JSON.stringify(boot[2]).replace(/</g, '\\u003c')}</script>` : ''))
     .replace('</head>', tags + '\n</head>')
     .replace(/<main id="view" class="wrap">[\s\S]*?<\/main>/, () => `<main id="view" class="wrap">${pg.body}</main>`)
     .replace('</body>', () => `<script type="application/json" id="faq-data">${JSON.stringify(SITE.faq).replace(/</g, '\\u003c')}</script>\n</body>`);
@@ -129,7 +206,7 @@ function robots() {
 async function sitemap(env) {
   const d = await load(env);
   const last = d && d.updatedAt ? String(d.updatedAt).slice(0, 10) : new Date().toISOString().slice(0, 10);
-  const urls = [['/', 1.0], ['/all', 0.8], ...Object.keys(SITE.cats).map(c => [catUrl(c), 0.7])];
+  const urls = [['/', 1.0], ['/all', 0.8], ...Object.keys(SITE.cats).map(c => [catUrl(c), 0.7]), ...((d && d.products) || []).slice(0, 200).map(x => ['/item/' + x.id, 0.6])];
   const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map(([u, p]) => `<url><loc>${esc(abs(u))}</loc><lastmod>${last}</lastmod><changefreq>daily</changefreq><priority>${p}</priority></url>`).join('\n')}\n</urlset>\n`;
   return new Response(xml, { headers: headers('application/xml;charset=utf-8') });
 }
@@ -141,7 +218,7 @@ async function llms(env) {
   for (const [c, cfg] of Object.entries(SITE.cats)) t += `- [${c}](${abs(catUrl(c))}): ${cfg.intro}\n`;
   t += `\n## 자주 묻는 질문\n\n${SITE.faq.map(f => `### ${f.q}\n${f.a}\n`).join('\n')}`;
   if (list.length) t += `\n## 현재 인기 상품\n\n${list.slice(0, 10).map((p, i) => `${i + 1}. ${p.name} (${won(p.price)})`).join('\n')}\n`;
-  t += `\n## 안내\n\n- 이 사이트는 쿠팡 파트너스 활동의 일환으로 수수료를 제공받을 수 있습니다\n- 상품 판매와 배송은 쿠팡에서 직접 처리하며 가격과 재고는 수시로 바뀝니다\n- 사이트맵: ${abs('/sitemap.xml')}\n`;
+  t += `\n## 안내\n\n- ${DISC}\n- 상품 판매와 배송은 쿠팡에서 직접 처리하며 가격과 재고는 수시로 바뀝니다\n- 사이트맵: ${abs('/sitemap.xml')}\n`;
   return new Response(t, { headers: headers('text/plain;charset=utf-8') });
 }
 
@@ -155,7 +232,7 @@ export async function seo(req, env, url, ctx, h = {}) {
     const r = route(p);
     if (!r) return null;
     const cache = caches.default;
-    const key = new Request(url.origin + url.pathname);
+    const key = new Request(url.origin + url.pathname + '?v=7');
     if (req.method === 'GET') { const hit = await cache.match(key); if (hit) return hit; }
     const tpl = await env.ASSETS.fetch(new Request(new URL('/', url)));
     if (!tpl.ok) return null;
@@ -163,14 +240,28 @@ export async function seo(req, env, url, ctx, h = {}) {
     let clicks = {};
     try { if (h.clicks) clicks = await h.clicks(); } catch (e) {}
     const list = (d && d.products) || [];
+    if (r.t === 'item') {
+      r.p = list.find(x => x.id === r.id);
+      if (!r.p) return null;
+      try { r.hist = h.hist ? await h.hist(r.id) : []; } catch (e) { r.hist = []; }
+    }
     const pg = build(r, list);
+    if (r.t === 'item' && r.p.image) pg.preload = r.p.image;
     const first = list.find(x => x.image);
     if (r.t === 'home') { // 첫 화면 대표 이미지는 미리 받기 시작한다 (클릭 순위가 앱과 같은 방식)
       const hero = list.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p).find(p => p.image);
-      if (hero) pg.preload = '/i/' + hero.id;
+      if (hero) pg.preload = hero.image;
     }
-    const boot = d ? [{ ...d, products: list.map(p => ({ ...p, image: !!p.image })) }, clicks] : null; // 첫 화면에 필요한 데이터를 HTML에 함께 보낸다
-    const html = inject(await tpl.text(), pg, first ? abs('/i/' + first.id) : '', boot);
+    // 첫 화면에 필요한 데이터를 HTML에 함께 보낸다 (긴 이미지 주소는 빼고 화면에 먼저 보일 상품 몇 개만 따로 싣는다)
+    const rank = l => l.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p);
+    const imgs = {};
+    const want = r.t === 'item' ? [r.p, ...list.filter(x => x.category === r.p.category && x.id !== r.p.id).slice(0, 4)]
+      : r.t === 'cat' ? rank(list.filter(x => x.category === r.c)).slice(0, 12)
+      : rank(list).slice(0, 16);
+    for (const p of want) if (p.image) imgs[p.id] = p.image;
+    const slim = r.t === 'item' ? [] : list.map(({ rocket, image, ...x }) => ({ ...x, i: image ? 1 : 0 }));
+    const boot = d ? [{ updatedAt: d.updatedAt, categories: d.categories, meta: d.meta, products: slim }, clicks, imgs] : null;
+    const html = inject(await tpl.text(), pg, (r.t === 'item' ? (r.p.image || '') : first ? first.image : ''), boot);
     const res = new Response(req.method === 'HEAD' ? null : html, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'public,max-age=60,s-maxage=600' } });
     if (req.method === 'GET' && ctx) ctx.waitUntil(cache.put(key, res.clone()));
     return res;

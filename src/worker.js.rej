@@ -1,0 +1,44 @@
+--- src/worker.js
++++ src/worker.js
+@@ -1,5 +1,5 @@
+ import { seo } from './seo.js';
+-import { track, admin, clickCounts, countRequest, overBudget, pruneOld } from './analytics.js';
++import { track, admin, clickCounts, countRequest, overBudget, pruneOld, recordPrices, getHist } from './analytics.js';
+ import { handle as community } from './community.js';
+ 
+ const HOST = 'https://api-gateway.coupang.com';
+@@ -7,11 +7,11 @@ const BASE = '/v2/providers/affiliate_open_api/apis/openapi/v1/products';
+ 
+ // 카테고리별 검색어와 베스트 카테고리 ID 설정
+ const CATEGORIES = {
+-  '스킨케어': ['토너', '에센스', '크림'],
+-  '선케어': ['선크림', '선스틱'],
++  '스킨케어': ['토너', '에센스'],
++  '선케어': ['선크림'],
+   '클렌징': ['클렌징폼', '클렌징오일'],
+   '메이크업': ['쿠션', '립틴트'],
+-  '바디헤어': ['바디로션', '샴푸']
++  '바디헤어': ['샴푸']
+ };
+ const BEST_BEAUTY_ID = 1010;
+ const PER_KEYWORD = 6;
+@@ -98,7 +110,10 @@ async function refresh(env) {
+   } catch (e) { console.error('best', e.message); errors.push('best: ' + e.message); }
+   for (const [cat, kws] of Object.entries(CATEGORIES)) {
+     for (const kw of kws) {
+-      try { add(await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env), cat, ''); }
++      try {
++        if (!(await allowSearch(env))) { errors.push('search ' + kw + ': 시간당 호출 한도 보호로 건너뜀'); continue; }
++        add(await call(`${BASE}/search`, { keyword: kw, limit: PER_KEYWORD }, env), cat, '');
++      }
+       catch (e) { console.error('search', kw, e.message); errors.push('search ' + kw + ': ' + e.message); }
+     }
+   }
+@@ -121,6 +136,7 @@ async function refresh(env) {
+     for (const k of keys.slice(0, Math.max(0, keys.length - 3000))) delete links[k];
+     await env.DATA.put('links', JSON.stringify(links));
+     linksCache = { t: 0, v: {} };
++    try { await recordPrices(env, products.map(x => ({ ...x }))); } catch (e) { console.error('price', e.message); }
+     await env.DATA.put('products', JSON.stringify({ updatedAt: new Date().toISOString(), categories: ['전체', ...Object.keys(CATEGORIES)], products }));
+   }
+   const status = { at: new Date().toISOString(), count: products.length, errors: errors.slice(0, 8) };
