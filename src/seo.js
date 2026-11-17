@@ -226,6 +226,7 @@ async function llms(env) {
   return new Response(t, { headers: headers('text/plain;charset=utf-8') });
 }
 
+const busy = new Set();
 export async function seo(req, env, url, ctx, h = {}) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return null;
   try {
@@ -236,41 +237,64 @@ export async function seo(req, env, url, ctx, h = {}) {
     const r = route(p);
     if (!r) return null;
     const cache = caches.default;
-    const key = new Request(url.origin + url.pathname + '?v=12');
-    if (req.method === 'GET') { const hit = await cache.match(key); if (hit) return hit; }
-    const tpl = await env.ASSETS.fetch(new Request(new URL('/', url)));
-    if (!tpl.ok) return null;
-    const d = h.products ? await h.products(env) : await load(env);
-    let clicks = {};
-    try { if (h.clicks) clicks = await h.clicks(); } catch (e) {}
-    const list = (d && d.products) || [];
-    if (r.t === 'item') {
-      r.p = list.find(x => x.id === r.id);
-      if (!r.p) return null;
-      try { r.hist = h.hist ? await h.hist(r.id) : []; } catch (e) { r.hist = []; }
-    }
-    const pg = build(r, list);
-    if (r.t === 'item' && r.p.image) pg.preload = r.p.image;
-    const first = list.find(x => x.image);
-    if (r.t === 'home') pg.randHero = true; // 메인 상품은 방문할 때마다 무작위라 미리 받을 이미지는 브라우저에서 고른다
-    // 첫 화면에 필요한 데이터를 HTML에 함께 보낸다 (긴 이미지 주소는 빼고 화면에 먼저 보일 상품 몇 개만 따로 싣는다)
-    const rank = l => l.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p);
-    const imgs = {};
-    const want = r.t === 'item' ? [r.p, ...list.filter(x => x.category === r.p.category && x.id !== r.p.id).slice(0, 4)]
-      : r.t === 'cat' ? rank(list.filter(x => x.category === r.c)).slice(0, 12)
-      : r.t === 'home' ? (() => { // 메인 상품 후보: 분야마다 순위가 가장 높은 상품 하나씩과 전체 상위 5개
+    const key = new Request(url.origin + url.pathname + '?v=13');
+    const gen = async () => {
+      const t0 = Date.now();
+      // 템플릿과 상품과 클릭과 가격 기록을 동시에 읽는다
+      const [tpl, d, clicks, hist] = await Promise.all([
+        env.ASSETS.fetch(new Request(new URL('/', url))),
+        h.products ? h.products(env) : load(env),
+        h.clicks ? h.clicks().catch(() => ({})) : {},
+        r.t === 'item' && h.hist ? h.hist(r.id).catch(() => []) : []
+      ]);
+      if (!tpl.ok) return null;
+      const list = (d && d.products) || [];
+      const rr = { ...r };
+      if (r.t === 'item') {
+        rr.p = list.find(x => x.id === r.id);
+        if (!rr.p) return null;
+        rr.hist = hist;
+      }
+      const pg = build(rr, list);
+      if (rr.t === 'item' && rr.p.image) pg.preload = rr.p.image;
+      const first = list.find(x => x.image);
+      if (rr.t === 'home') pg.randHero = true;
+      // 첫 화면에 필요한 데이터를 HTML에 함께 보낸다 (긴 이미지 주소는 빼고 화면에 먼저 보일 상품만 따로 싣는다)
+      const rank = l => l.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p);
+      const imgs = {};
+      let want;
+      if (rr.t === 'item') want = [rr.p, ...list.filter(x => x.category === rr.p.category && x.id !== rr.p.id).slice(0, 4)];
+      else if (rr.t === 'cat') want = rank(list.filter(x => x.category === rr.c)).slice(0, 12);
+      else {
+        const rk = rank(list);
+        if (rr.t === 'home') { // 메인 상품 후보(분야마다 1개)와 첫 화면 가로 목록 상위 12개
           const seen = new Set(), out = [];
-          for (const p of rank(list)) if (p.image && !seen.has(p.category)) { seen.add(p.category); out.push(p); }
-          return [...out, ...rank(list).slice(0, 5)];
-        })()
-      : rank(list).slice(0, 16);
-    for (const p of want) if (p.image) imgs[p.id] = p.image;
-    const slim = r.t === 'item' ? [] : list.map(({ rocket, image, ...x }) => ({ ...x, i: image ? 1 : 0 }));
-    const boot = d ? [{ updatedAt: d.updatedAt, categories: d.categories, meta: d.meta, products: slim }, clicks, imgs] : null;
-    const html = inject(await tpl.text(), pg, (r.t === 'item' ? (r.p.image || '') : first ? first.image : ''), boot);
-    const res = new Response(req.method === 'HEAD' ? null : html, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'public,max-age=60,s-maxage=600' } });
+          for (const p of rk) if (p.image && !seen.has(p.category)) { seen.add(p.category); out.push(p); }
+          want = [...out, ...rk.slice(0, 12)];
+        } else want = rk.slice(0, 16);
+      }
+      for (const p of want) if (p.image) imgs[p.id] = p.image;
+      const slim = rr.t === 'item' ? [] : list.map(({ rocket, image, ...x }) => ({ ...x, i: image ? 1 : 0 }));
+      const boot = d ? [{ updatedAt: d.updatedAt, categories: d.categories, meta: d.meta, products: slim }, clicks, imgs] : null;
+      const html = inject(await tpl.text(), pg, (rr.t === 'item' ? (rr.p.image || '') : first ? first.image : ''), boot);
+      // 브라우저에는 1분, 엣지에는 하루 보관하고 5분이 지나면 보여 주면서 뒤에서 새로 만든다
+      return new Response(html, { headers: { 'content-type': 'text/html;charset=utf-8', 'cache-control': 'public,max-age=60,s-maxage=86400', 'x-gen': String(Date.now()), 'server-timing': `gen;dur=${Date.now() - t0}` } });
+    };
+    if (req.method === 'GET') {
+      const hit = await cache.match(key);
+      if (hit) {
+        const age = Date.now() - Number(hit.headers.get('x-gen') || 0);
+        if (age > 300000 && ctx && !busy.has(key.url)) {
+          busy.add(key.url);
+          ctx.waitUntil((async () => { try { const n = await gen(); if (n) await cache.put(key, n); } catch (e) {} finally { busy.delete(key.url); } })());
+        }
+        return hit;
+      }
+    }
+    const res = await gen();
+    if (!res) return null;
     if (req.method === 'GET' && ctx) ctx.waitUntil(cache.put(key, res.clone()));
-    return res;
+    return req.method === 'HEAD' ? new Response(null, res) : res;
   } catch (e) {
     return null;
   }
