@@ -95,15 +95,23 @@
       }
       return out;
     };
-    let top3 = take(r.filter(p => p.image), 4);
-    if (!top3.length) top3 = take(r, 1);
+    // 메인 상품은 방문할 때마다 무작위 (서버가 이미지 주소를 실어 준 상품 중에서 고른다)
+    const known = products.products.filter(p => p.i && IMG[p.id]);
+    const pick = (window.__hero || []).map(id => known.find(p => p.id === id)).filter(Boolean);
+    window.__hero = null;
+    while (pick.length < 4 && pick.length < known.length) {
+      const c = known[Math.floor(Math.random() * known.length)];
+      if (!pick.includes(c)) pick.push(c);
+    }
+    let top3 = take(pick, 4);
+    if (!top3.length) top3 = take(r.filter(p => p.image || p.i), 1);
     const railP = take(r, 12);
-    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${ilink(p)}>${p.image || p.i ? `<div class="bg">${img(p, i === 0, 'main')}</div>` : ''}<div class="tx"><small>🏆 오늘의 랭킹 ${i + 1}위</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div></a>`).join('');
+    const slides = top3.map((p, i) => `<a class="slide s${i % 4}" ${ilink(p)}>${p.image || p.i ? `<div class="bg">${img(p, i === 0, 'main')}</div>` : ''}<div class="tx"><small>✨ 오늘의 추천 상품</small><h2>${esc(p.name)}</h2><div class="pr">${won(p.price)}</div><span class="go">상품보기 →</span></div></a>`).join('');
     const cats = CATS.map(c => ({ c, l: take(r.filter(p => p.category === c), 5) })).filter(x => x.l.length);
     view.innerHTML = `
       <section class="hero"><div class="car" id="car">${slides || '<div class="slide s0 on"><div class="tx"><small>🚗 BODCAR</small><h2>자동차용품 인기템을 준비하고 있어요</h2></div></div>'}<button class="cb l" aria-label="이전">‹</button><button class="cb r" aria-label="다음">›</button><div class="dots" id="dots"></div></div><div class="tiles"><a class="tile t1" href="/c/${encodeURIComponent('차박캠핑')}"><b>⛺ 차박캠핑 모아보기</b><span>떠나기 전 필수템</span></a><a class="tile t2" href="#/talk"><b>💬 수다방</b><span>후기와 꿀팁 구경하기</span></a></div></section>
       <section class="icons">${[['전체', '🛍', '/all'], ...CATS.map(c => [c, icon(c), '/c/' + encodeURIComponent(c)]), ['수다방', '💬', '#/talk']].map(([n, e, h]) => `<a href="${h}"><i>${e}</i>${n}</a>`).join('')}</section>
-      <section class="sec"><div class="sh"><h2>🔥 실시간 <em>BEST 랭킹</em></h2><a href="/all">전체보기 ›</a></div><div class="railw"><button class="rb l" aria-label="이전">‹</button><div class="rail" id="rail">${railP.map((p, i) => card(p, i, { rank: 1, off: top3.length })).join('') || '<p class="empty">상품을 준비 중이에요</p>'}</div><button class="rb r" aria-label="다음">›</button></div></section>
+      <section class="sec"><div class="sh"><h2>🔥 실시간 <em>BEST 랭킹</em></h2><a href="/all">전체보기 ›</a></div><div class="railw"><button class="rb l" aria-label="이전">‹</button><div class="rail" id="rail">${railP.map((p, i) => card(p, i, { rank: 1 })).join('') || '<p class="empty">상품을 준비 중이에요</p>'}</div><button class="rb r" aria-label="다음">›</button></div></section>
       ${cats.map(x => `<section class="sec"><div class="sh"><h2>${icon(x.c)} ${esc(x.c)} <em>BEST</em></h2><a href="/c/${encodeURIComponent(x.c)}">더보기 ›</a></div><div class="pg">${x.l.map((p, i) => card(p, i)).join('')}</div></section>`).join('')}
       <section class="band"><div class="sh"><h2>💬 수다방 <em>새 글</em></h2><a href="#/talk">더보기 ›</a></div><div class="posts" id="posts"><p class="hint">불러오는 중</p></div><a class="btn main" style="margin-top:14px" href="#/write">✏️ 글쓰기</a></section>${faqHtml()}`;
     const car = $('car'), sl = [...car.querySelectorAll('.slide')];

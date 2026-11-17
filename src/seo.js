@@ -193,7 +193,7 @@ function inject(html, pg, img, boot) {
   return html
     .replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(pg.title)}</title>`)
     .replace(/<meta name="description"[^>]*>/, `<meta name="description" content="${esc(pg.desc)}">`)
-    .replace('<link rel="stylesheet" href="/style.css">', m => m + (boot ? `\n<script>window.__p=${JSON.stringify([boot[0], boot[1]]).replace(/</g, '\\u003c')};window.__img=${JSON.stringify(boot[2]).replace(/</g, '\\u003c')}</script>` : ''))
+    .replace(/<link rel="stylesheet" href="\/style\.css[^"]*">/, m => m + (boot ? `\n<script>window.__p=${JSON.stringify([boot[0], boot[1]]).replace(/</g, '\\u003c')};window.__img=${JSON.stringify(boot[2]).replace(/</g, '\\u003c')}${pg.randHero ? ';(function(){var k=Object.keys(window.__img),h=[];while(h.length<4&&k.length)h.push(k.splice(Math.floor(Math.random()*k.length),1)[0]);window.__hero=h;if(h[0]){var l=document.createElement(\'link\');l.rel=\'preload\';l.as=\'image\';l.href=window.__img[h[0]];l.fetchPriority=\'high\';l.referrerPolicy=\'no-referrer\';document.head.appendChild(l)}})()' : ''}</script>` : ''))
     .replace('</head>', tags + '\n</head>')
     .replace(/<main id="view" class="wrap">[\s\S]*?<\/main>/, () => `<main id="view" class="wrap">${pg.body}</main>`)
     .replace('</body>', () => `<script type="application/json" id="faq-data">${JSON.stringify(SITE.faq).replace(/</g, '\\u003c')}</script>\n</body>`);
@@ -236,7 +236,7 @@ export async function seo(req, env, url, ctx, h = {}) {
     const r = route(p);
     if (!r) return null;
     const cache = caches.default;
-    const key = new Request(url.origin + url.pathname + '?v=11');
+    const key = new Request(url.origin + url.pathname + '?v=12');
     if (req.method === 'GET') { const hit = await cache.match(key); if (hit) return hit; }
     const tpl = await env.ASSETS.fetch(new Request(new URL('/', url)));
     if (!tpl.ok) return null;
@@ -252,15 +252,17 @@ export async function seo(req, env, url, ctx, h = {}) {
     const pg = build(r, list);
     if (r.t === 'item' && r.p.image) pg.preload = r.p.image;
     const first = list.find(x => x.image);
-    if (r.t === 'home') { // 첫 화면 대표 이미지는 미리 받기 시작한다 (클릭 순위가 앱과 같은 방식)
-      const hero = list.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p).find(p => p.image);
-      if (hero) pg.preload = hero.image;
-    }
+    if (r.t === 'home') pg.randHero = true; // 메인 상품은 방문할 때마다 무작위라 미리 받을 이미지는 브라우저에서 고른다
     // 첫 화면에 필요한 데이터를 HTML에 함께 보낸다 (긴 이미지 주소는 빼고 화면에 먼저 보일 상품 몇 개만 따로 싣는다)
     const rank = l => l.map((p, i) => ({ p, i })).sort((x, y) => (clicks[y.p.id] || 0) - (clicks[x.p.id] || 0) || x.i - y.i).map(x => x.p);
     const imgs = {};
     const want = r.t === 'item' ? [r.p, ...list.filter(x => x.category === r.p.category && x.id !== r.p.id).slice(0, 4)]
       : r.t === 'cat' ? rank(list.filter(x => x.category === r.c)).slice(0, 12)
+      : r.t === 'home' ? (() => { // 메인 상품 후보: 분야마다 순위가 가장 높은 상품 하나씩과 전체 상위 5개
+          const seen = new Set(), out = [];
+          for (const p of rank(list)) if (p.image && !seen.has(p.category)) { seen.add(p.category); out.push(p); }
+          return [...out, ...rank(list).slice(0, 5)];
+        })()
       : rank(list).slice(0, 16);
     for (const p of want) if (p.image) imgs[p.id] = p.image;
     const slim = r.t === 'item' ? [] : list.map(({ rocket, image, ...x }) => ({ ...x, i: image ? 1 : 0 }));
