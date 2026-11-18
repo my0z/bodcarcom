@@ -17,10 +17,9 @@ binding = "DB"
 database_name = "bodcar-db"
 database_id = "8426606d-e4aa-4af0-8b3f-e5a4a3292b24"
 
+# 통합 저장소(vutykr)로 이전되어 이 Worker의 크론은 끈다
 [triggers]
-crons = ["0 * * * *"]
+crons = []
 
-[[routes]]
-pattern = "bodcar.com"
-custom_domain = true
+# bodcar.com은 vutykr 저장소의 Worker가 맡는다
 
